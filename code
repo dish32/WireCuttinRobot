@@ -1,0 +1,144 @@
+#include <Wire.h> //I2C communication 
+#include <LiquidCrystal_I2C.h> //LCD display 
+#include <Keypad.h> //4x3 Keypad 
+#include <Servo.h> //control the servo cutter 
+
+
+#define EN 8 //enable pin stepper driver 
+#define X_DIR 5 //direction pin for stepper 
+#define X_STP 2 //step pin for stepper
+LiquidCrystal_I2C lcd(0x27, 16, 2); //LCD I2C address 0x27,16x2
+Servo cutter; //servo motor for cutting 
+
+// set up 4x3 number pad allow user to enter number , input , cofrim 
+const byte ROWS = 4, COLS = 3;
+char keys[ROWS][COLS] = {
+  {'1','2','3'},
+  {'4','5','6'},
+  {'7','8','9'},
+  {'*','0','#'}
+};
+byte rowPin[ROWS] = {40, 42, 47, 46};
+byte columPin[COLS] = {48, 50, 52};
+Keypad keypad = Keypad(makeKeymap(keys), rowPin, columPin, ROWS, COLS);
+
+
+const int STEP_DELAY = 500; //delay with steps 
+const int STEPS_PER_CM = 85; //steps needed to move 1cm 
+
+// State variables
+enum SystemState { INPUT_LENGTH, INPUT_QTY, PROCESSING, COMPLETE };
+SystemState currentState = INPUT_LENGTH;
+//Global variables 
+int lengthCM = 0; //length of wire piece 
+int quantity = 0; //no of pieces cut
+int currentPiece = 0; //current pieces for processed 
+
+void setup() {
+  lcd.begin(16,2);
+  lcd.backlight();
+  pinMode(X_DIR, OUTPUT);
+  pinMode(X_STP, OUTPUT);
+  pinMode(EN, OUTPUT);
+  digitalWrite(EN, LOW); //enable the stepper 
+  cutter.attach(22); //attach servo motor pin 22
+  cutter.write(90); // Neutral position
+}
+
+//read numberpad input 
+//display input on LCD screen 
+void processInput() {
+  static String input = "";
+  char key = keypad.getKey();
+  
+  if (key) {
+    if (key >= '0' && key <= '9') {
+      input += key;
+      lcd.setCursor(0, 1);
+      lcd.print(input);
+    } 
+    else if (key == '#') {
+      if (currentState == INPUT_LENGTH) {
+        lengthCM = input.toInt();
+        input = "";
+        currentState = INPUT_QTY;
+        lcd.clear();
+        lcd.print("Enter quantity:");
+      } 
+      else if (currentState == INPUT_QTY) {
+        quantity = input.toInt();
+        currentState = PROCESSING;
+        lcd.clear();
+        lcd.print("Processing...");
+      }
+    } 
+    else if (key == '*' && input.length() > 0) {
+      input = "";
+      lcd.setCursor(0, 1);
+      lcd.print("                ");
+    }
+  }
+}
+
+//controll  cutting process 
+void executeCuttingProcess() {
+  static unsigned long lastStepTime = 0;
+  static int stepsRemain = 0;
+  static bool cutting = false;
+  
+  if (currentPiece < quantity) {
+    if (stepsRemain == 0 && !cutting) {
+      // Start new piece
+      stepsRemain = lengthCM * STEPS_PER_CM;
+      digitalWrite(X_DIR, HIGH);
+    }
+    
+    if (stepsRemain > 0 && millis() - lastStepTime > STEP_DELAY/1000) {
+      digitalWrite(X_STP, HIGH);
+      delayMicroseconds(10);
+      digitalWrite(X_STP, LOW);
+      stepsRemain--;
+      lastStepTime = millis();
+    } 
+    else if (stepsRemain == 0 && !cutting) {
+      // Perform cut
+      cutter.write(0);
+      delay(1000);
+      cutter.write(180);
+      delay(1000);
+      cutting = true;
+      currentPiece++;
+    } 
+    else if (cutting) {
+      cutting = false;
+    }
+  } 
+  else {
+    currentState = COMPLETE;
+    lcd.clear();
+    lcd.print("All done!");
+    delay(2000);
+    // Reset for next job
+    currentState = INPUT_LENGTH;
+    currentPiece = 0;
+    lengthCM = 0;
+    quantity = 0;
+    lcd.clear();
+    lcd.print("Enter length:");
+  }
+}
+
+void loop() {
+  switch (currentState) {
+    case INPUT_LENGTH:
+    case INPUT_QTY:
+      processInput();
+      break;
+    case PROCESSING:
+      executeCuttingProcess();
+      break;
+    case COMPLETE:
+      // Handled in executeCuttingProcess
+      break;
+  }
+}
